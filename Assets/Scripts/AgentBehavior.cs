@@ -1,0 +1,146 @@
+using Unity.MLAgents;
+using Unity.MLAgents.Sensors;
+using Unity.MLAgents.Actuators;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+public class AgentBehavior : Agent
+{
+    public float speed = 10f;
+    public float torque = 10f;
+
+    public int score = 0;
+    public bool resetOnCollision = true;
+    public bool resetOnCompletion = false;
+
+    private Transform _track;
+
+    public override void Initialize()
+    {
+        GetTrackIncrement();
+    }
+
+    private void MoveCar(float horizontal, float vertical, float dt)
+    {
+        float distance = speed * vertical;
+        transform.Translate(distance * dt * Vector3.forward);
+
+        float rotation = horizontal * torque * 90f;
+        transform.Rotate(0f, rotation * dt, 0f);
+    }
+
+    public override void OnActionReceived(ActionBuffers actionBuffers)
+    {
+        float horizontal = actionBuffers.ContinuousActions[0];
+        float vertical = actionBuffers.ContinuousActions[1];
+
+        var lastPos = transform.position;
+        MoveCar(horizontal, vertical, Time.fixedDeltaTime);
+
+        int reward = GetTrackIncrement();
+
+        var moveVec = transform.position - lastPos;
+        float angle = Vector3.Angle(moveVec, GameObject.FindGameObjectWithTag("Agent").transform.forward);
+        float bonus = (1f - angle / 90f) * Mathf.Clamp01(vertical) * Time.fixedDeltaTime;
+        AddReward(bonus);
+
+        score += reward;
+    }
+
+    public override void Heuristic(in ActionBuffers actionsOut)
+    {
+        var continousActionsOut = actionsOut.ContinuousActions;
+        continousActionsOut[0] = Input.GetAxis("Horizontal");
+        continousActionsOut[1] = Input.GetAxis("Vertical");
+    }
+
+    private Transform GetTrackTile()
+    {
+        var carCenter = transform.position + Vector3.up;
+        Physics.Raycast(carCenter, Vector3.down, out var hit, 2f);
+        if(hit.transform.gameObject.tag == "End")
+        {
+            SetReward(3f);
+            resetOnCompletion = true;
+            //EndEpisode();
+            //Vector3 vec = new Vector3(.25f, .5f, .25f);
+            //transform.localPosition = vec;
+            // transform.localRotation = Quaternion.identity;
+            SceneManager.LoadScene("SampleScene");
+
+
+        }
+        return hit.transform;
+    }
+
+    public override void CollectObservations(VectorSensor vectorSensor)
+    {
+        _track = GetTrackTile();
+        float angle = Vector3.SignedAngle(_track.forward, transform.forward, Vector3.up);
+
+        vectorSensor.AddObservation(angle / 180f);
+        vectorSensor.AddObservation(ObserveRay(1.5f, 0.5f, 25f));
+        vectorSensor.AddObservation(ObserveRay(1.5f, 0f, 0f));
+        vectorSensor.AddObservation(ObserveRay(1.5f, -0.5f, -25f));
+        vectorSensor.AddObservation(ObserveRay(-1.5f, 0, 180f));
+    }
+
+    private float ObserveRay(float z, float x, float angle)
+    {
+        var tf = transform;
+
+        // Get the start position of the ray
+        var raySource = tf.position + Vector3.up / 2f;
+        const float RAY_DIST = 5f;
+        var position = raySource + tf.forward * z + tf.right * x;
+
+        // Get the angle of the ray
+        var eulerAngle = Quaternion.Euler(0, angle, 0f);
+        var dir = eulerAngle * tf.forward;
+
+        // See if there is a hit in the given direction
+        Physics.Raycast(position, dir, out var hit, RAY_DIST);
+        return hit.distance >= 0 ? hit.distance / RAY_DIST : -1f;
+    }
+
+    private int GetTrackIncrement()
+    {
+        int reward = 0;
+        var carCenter = transform.position + Vector3.up;
+
+        // Find what tile I'm on
+        if (Physics.Raycast(carCenter, Vector3.down, out var hit, 2f))
+        {
+            var newHit = hit.transform;
+            // Check if the tile has changed
+            if (_track != null && newHit != _track)
+            {
+                float angle = Vector3.Angle(_track.forward, newHit.position - _track.position);
+                reward = (angle < 90f) ? 1 : -1;
+            }
+
+            _track = newHit;
+        }
+
+        return reward;
+    }
+
+    public override void OnEpisodeBegin()
+    {
+        if (resetOnCollision || resetOnCompletion)
+        {
+            Vector3 vec = new Vector3(.25f, .5f, .25f);
+            transform.localPosition = vec;
+            transform.localRotation = Quaternion.identity;
+        }
+    }
+
+    private void OnCollisionEnter(Collision other)
+    {
+        if (other.gameObject.CompareTag("wall"))
+        {
+            SetReward(-1.0f);
+            EndEpisode();
+        }
+    }
+}
